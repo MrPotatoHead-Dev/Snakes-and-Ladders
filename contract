@@ -1,0 +1,272 @@
+//SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.17;
+
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {Ownable} from '@openzeppelin/contracts/access/Ownable.sol';
+import {Ownable} from '@openzeppelin/contracts/access/Ownable.sol';
+
+//@dev the parent contract for this game
+//dev users register their credientials 
+contract SnakesAndLadders is Ownable {
+
+
+    AggregatorV3Interface internal priceFeed;
+
+ 
+    //mapping(address => bool) playersTurn;
+    mapping(address => uint256) playersDepositAmount;
+
+    uint256 entranceFee = 50;
+    uint256 entranceFeeFactored =  50 * 10**18;
+
+    modifier costs() {
+        require(msg.value >= entranceFeeFactored);
+        _;
+
+    }
+        
+
+    modifier noReentrant() {
+        require(!locked, "No re-entrancy");
+        locked = true;
+        _; // it locks as it is excecuting the function
+        locked = false; // unlocks once its complete
+    }
+    
+    constructor() {
+        priceFeed = AggregatorV3Interface(
+            0xD4a33860578De61DBAbDc8BFdb98FD742fA7028e
+        ); // goerli network
+    }
+    bool internal locked;
+    bool isPaused;
+    bool hasStarted;
+    bool hasFinished;
+
+    struct Player {
+        address playerAddress;
+        string playerName;
+        uint256 playerAge;
+        uint256 playerPosition;
+        bool turn;
+    }
+    
+    Player[] public players;
+    address[] public podium; // to be used in BoardMechanics
+
+    struct Winner {
+        address playerAddress;
+        uint256 position;
+    }
+    
+    Winner[] public winners;
+        function start() public onlyOwner {
+
+        isPaused = false;
+        hasStarted = true;
+        players[0].turn = true;
+        }
+    
+    function playerRegistration(string memory _playerName, uint256 _age) public {
+        require(msg.sender != owner(), "Owner cannot register");
+        require(players.length <= 9, "Max 10 Players per game");
+
+        uint256 playerCount = players.length;
+
+        for (uint256 i; i < playerCount; ++i) {
+            require(keccak256(abi.encodePacked(_playerName)) != keccak256(abi.encodePacked(players[i].playerName)), "This name is taken");
+        }
+
+        // adding the players cridentials to the array and mapping it to their address
+        // player position starts off at 0
+        // no ones turn
+        Player memory player = Player(msg.sender, _playerName, _age, 0, false);
+        players.push(player);
+        
+    }
+
+    function dice() public {
+        require(whosTurn(msg.sender)==true );
+
+        //rolling the dice 
+        uint256 diceValue = uint256(keccak256(abi.encodePacked(block.timestamp,block.difficulty,  
+        msg.sender))) % 7; // 6 sided dide     
+        //reduce the amount of 0 outcomes      
+        if (diceValue == 0) {
+            diceValue = uint256(keccak256(abi.encodePacked(block.timestamp,block.difficulty,  
+            msg.sender))) % 7;
+            }
+        uint256 playerCount = players.length;
+        //changes state of next player so they can call dice
+        for (uint8 i; i < playerCount; ++i) {
+            if (players[i].playerAddress == msg.sender) {
+                //update position
+                players[i].playerPosition = players[i].playerPosition + diceValue;
+                updatePosition(i);
+                //update players rolling privilage
+                players[i].turn = false;
+
+                //allow next player to have dice access
+                if (i+1 < playerCount -1 )
+                    {players[i+1].turn = true;}
+                //reseting count to 0
+                if (i+1 == playerCount + 1 ) { 
+                    players[0].turn = true;} // go back to player 1
+                }
+                if (players[i].playerPosition >= 100) {
+                     storeWinner(players[i].playerAddress);
+                     }
+                       
+            }
+    }
+
+    //@dev the rules of the game are implemented in this function
+    function updatePosition(uint8 _index) internal {
+            // ladders
+        if (players[_index].playerPosition == 2) {players[_index].playerPosition = 23;}
+        if (players[_index].playerPosition == 8) {players[_index].playerPosition = 34;}
+        if (players[_index].playerPosition == 20) {players[_index].playerPosition = 74;}
+        if (players[_index].playerPosition == 32) {players[_index].playerPosition = 68;}
+        if (players[_index].playerPosition == 41) {players[_index].playerPosition = 79;}
+        if (players[_index].playerPosition == 74) {players[_index].playerPosition = 88;}
+        if (players[_index].playerPosition == 82) {players[_index].playerPosition = 100;}
+        if (players[_index].playerPosition == 85) {players[_index].playerPosition = 95;}
+        //Snakes
+        if (players[_index].playerPosition == 29) {players[_index].playerPosition = 9;}
+        if (players[_index].playerPosition == 38) {players[_index].playerPosition = 15;}
+        if (players[_index].playerPosition == 47) {players[_index].playerPosition = 5;}
+        if (players[_index].playerPosition == 53) {players[_index].playerPosition = 33;}
+        if (players[_index].playerPosition == 62) {players[_index].playerPosition = 37;}
+        if (players[_index].playerPosition == 86) {players[_index].playerPosition = 54;}
+        if (players[_index].playerPosition == 92) {players[_index].playerPosition = 70;}
+        if (players[_index].playerPosition == 97) {players[_index].playerPosition = 25;}
+    }
+
+    //@dev when players reach the end they will be removed from the game
+    //@dev if they are in the top 3 their address will be stored
+    function storeWinner(address _playerAddress) internal {
+        uint256 winnerCount = 0;
+        winners.push(Winner({playerAddress: _playerAddress, position: winnerCount++}));
+        //remove access to dice for that address
+        for (uint8 i ; i < players.length; ++i) {
+            if (players[i].playerAddress == _playerAddress) {
+                // players[i].turn = false;
+                // players.splice(i, 1);
+                delete players[i];
+                break;
+            }
+        }
+        
+        podium.push(winners[0].playerAddress);
+        podium.push(winners[1].playerAddress);
+        podium.push(winners[2].playerAddress);
+    }
+    
+
+    //@dev find out whos turn it is based on the address provided
+    function whosTurn(address _playerAddress) internal view returns(bool) {
+        //check if the address passed is playing
+        uint256 playerCount = players.length;
+        for (uint256 i; i < playerCount; ++i) {
+            require(_playerAddress == (players[i].playerAddress), "You aren't playing");
+        }
+        //retrieve the bool based on the address given
+        for (uint i; i < playerCount; ++i) {
+            if (players[i].playerAddress == _playerAddress) {
+                
+                return players[i].turn;
+                }
+        }
+        return false;
+    }
+
+
+
+    //************************************************************************************** */
+    function getPrice() internal view returns (uint256) {
+        ( , int256 answer, , ,) = priceFeed.latestRoundData();
+        return uint256(answer * 10 **18); // factor to keep all the same
+    }
+    //@dev convert eth to usd
+    function feeConversion() internal view returns (uint256){
+        uint256 price = getPrice();
+        uint256 feeInEth = 1 / (price / entranceFeeFactored);
+        return feeInEth;
+    }
+
+    //@dev once the player has met the requirements the players information is stored
+    function fundFee() public payable {
+        require(msg.value > feeConversion(), "You need to deposit more Eth");
+        require(msg.sender != owner(), "Owner cannot participate in games");
+        require(playersDepositAmount[msg.sender] == 0, "Player has already deposited fee");
+        require(players.length <= 9, "The game is full");
+
+        playersDepositAmount[msg.sender] += msg.value;
+    }
+    //@dev when the game is over the player will be allowed to withdraw their winnings (if any)
+    function winnerWithdraws() noReentrant public payable {
+        
+        for (uint8 i; i < podium.length; ++i)
+            {require(msg.sender == podium[i], "You are not a winner");}
+        //calculate winnings
+        uint256 contractBalance = entranceFeeFactored * players.length;
+
+        // first = 50%
+        uint256 firsAmount = contractBalance / 2 ;
+        // second = 30%
+        uint256 secondAmount = (contractBalance * 3) /10;
+        // third = 10% 
+        uint256 thirdAmount = contractBalance /10;
+      
+
+        // split the rewards to the address
+        if (msg.sender == podium[0]) {
+            (bool success, ) = msg.sender.call{value: firsAmount}("");
+            require(success, "Transfer failed.");   
+            }   
+        if (msg.sender == podium[1]) {
+            (bool success, ) = msg.sender.call{value: secondAmount}("");
+            require(success, "Transfer failed.");   
+            }   
+        if (msg.sender == podium[2]) {
+            (bool success, ) = msg.sender.call{value: thirdAmount}("");
+            require(success, "Transfer failed.");   
+            }   
+
+    }
+
+    //@dev this is called after game
+    function ownerWithdrawTax() onlyOwner public payable {
+        (bool success, ) =  msg.sender.call{value: address(this).balance}("");
+         require(success, "Transfer failed.");
+    }
+
+
+}
+
+
+
+//
+// 100 tiles
+
+// ladders
+// 2 => 23
+// 8 => 34
+// 20 => 77
+// 32 => 68
+// 41 => 79 
+// 74 => 88
+// 82 => 100
+// 85 => 95
+
+// snakes
+// 29 => 9
+// 38 => 15 
+// 47 => 5
+// 53 => 33
+// 62 => 37
+// 86 => 54
+// 92 => 70
+// 97 => 25
